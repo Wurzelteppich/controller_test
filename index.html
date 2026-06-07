@@ -2,20 +2,19 @@
 <html lang="de">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Spike Prime / Inventor Hub Controller</title>
+    <title>Pybricks Bluetooth Controller</title>
     <style>
-        body { font-family: sans-serif; text-align: center; padding: 50px; background: #222; color: #fff; }
-        button { padding: 15px 30px; font-size: 18px; cursor: pointer; background: #00bcd4; border: none; border-radius: 5px; color: white; }
+        body { font-family: sans-serif; text-align: center; padding: 50px; background: #1e1e1e; color: #fff; }
+        button { padding: 15px 30px; font-size: 18px; cursor: pointer; background: #4caf50; border: none; border-radius: 5px; color: white; }
         .data-box { margin-top: 30px; font-size: 24px; font-family: monospace; }
         .status { color: #888; margin-bottom: 20px; }
     </style>
 </head>
 <body>
 
-    <h1>LEGO Hub Game Controller</h1>
+    <h1>LEGO Hub Bluetooth Controller</h1>
     <div id="status" class="status">Status: Nicht verbunden</div>
-    <button id="connectBtn">Hub via USB verbinden</button>
+    <button id="connectBtn">Hub via Bluetooth verbinden</button>
 
     <div class="data-box">
         <p>Neigung (Roll): <span id="rollVal">0</span>°</p>
@@ -28,78 +27,66 @@
         const rollVal = document.getElementById('rollVal');
         const forceVal = document.getElementById('forceVal');
 
-        let port;
-        let reader;
+        // Die offiziellen UUIDs für den Nordic UART Service, den Pybricks nutzt
+        const NUS_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+        const NUS_TX_CHARACTERISTIC_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+
         let inputBuffer = "";
+        const decoder = new TextDecoder();
 
         connectBtn.addEventListener('click', async () => {
-            // 1. Sicherheitshürde: Benutzer nach Erlaubnis für den USB-Port fragen
+            statusDiv.innerText = "Suche nach Hub...";
+            
             try {
-                port = await navigator.serial.requestPort();
-                // Pybricks kommuniziert standardmässig mit 115200 Baud
-                await port.open({ baudRate: 115200 });
-                
-                statusDiv.innerText = "Status: Verbunden!";
+                // 1. Nach Bluetooth-Geräten filtern, die den Pybricks/Nordic-Dienst haben
+                const device = await navigator.bluetooth.requestDevice({
+                    filters: [{ services: [NUS_SERVICE_UUID] }]
+                });
+
+                statusDiv.innerText = "Verbinde mit GATT-Server...";
+                const server = await device.gatt.connect();
+
+                statusDiv.innerText = "Suche Daten-Service...";
+                const service = await server.getPrimaryService(NUS_SERVICE_UUID);
+
+                statusDiv.innerText = "Verbinde mit Datenstrom...";
+                const characteristic = await service.getCharacteristic(NUS_TX_CHARACTERISTIC_UUID);
+
+                // 2. Benachrichtigungen aktivieren (der Hub "pusht" die Daten nun zum Browser)
+                await characteristic.startNotifications();
+                characteristic.addEventListener('characteristicvaluechanged', handleBluetoothData);
+
+                statusDiv.innerText = "Status: Kabellos verbunden! 📶";
                 statusDiv.style.color = "#4caf50";
                 connectBtn.style.display = "none";
 
-                // 2. Den Lesevorgang starten
-                readFromHub();
-
             } catch (error) {
-                statusDiv.innerText = "Verbindung fehlgeschlagen: " + error;
+                statusDiv.innerText = "Bluetooth-Fehler: " + error;
                 statusDiv.style.color = "#f44336";
             }
         });
 
-        async function readFromHub() {
-            // TextDecoder wandelt die rohen Binärdaten (Bytes) vom USB in Text um
-            const textDecoder = new TextDecoderStream();
-            const readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
-            reader = textDecoder.readable.getReader();
-
-            // 3. Endlosschleife für den Datenempfang
-            while (true) {
-                const { value, done } = await reader.read();
-                if (done) {
-                    break; // Stream wurde geschlossen
-                }
-                if (value) {
-                    // Daten verarbeiten
-                    processData(value);
-                }
-            }
-        }
-
-        function processData(textChunk) {
-            // Da Daten in "Häppchen" ankommen, hängen wir sie an den Buffer an
+        // 3. Verarbeitung der ankommenden Bluetooth-Datenpakete
+        function handleBluetoothData(event) {
+            const value = event.target.value;
+            // Konvertiert die Byte-Daten in lesbaren Text
+            const textChunk = decoder.decode(value);
+            
             inputBuffer += textChunk;
-
-            // Wir splitten den Buffer bei jedem Zeilenumbruch (\n)
             let lines = inputBuffer.split("\n");
+            inputBuffer = lines.pop(); // Unvollständige Zeile für das nächste Paket aufheben
 
-            // Das letzte Element im Array ist entweder leer oder unvollständig,
-            // wir speichern es zurück in den Buffer für den nächsten Durchgang.
-            inputBuffer = lines.pop();
-
-            // Verarbeite jede vollständige Zeile
             for (let line of lines) {
                 line = line.trim();
                 if (line.length > 0) {
-                    // 4. CSV-Format aufteilen: "roll,force" -> ["roll", "force"]
                     const dataFields = line.split(",");
-                    
                     if (dataFields.length === 2) {
                         const roll = parseFloat(dataFields[0]);
                         const force = parseFloat(dataFields[1]);
 
-                        // Werte auf der Webseite live anzeigen
                         if (!isNaN(roll) && !isNaN(force)) {
                             rollVal.innerText = roll;
                             forceVal.innerText = force.toFixed(1);
-                            
-                            // HIER KÖNNTE JETZT DEINE SPIELLOGIK STARTEN:
-                            // z.B. if (force > 2.0) { schiessen(); }
                         }
                     }
                 }
